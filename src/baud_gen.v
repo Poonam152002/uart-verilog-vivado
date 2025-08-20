@@ -1,55 +1,46 @@
+`timescale 1ns/1ps
 // ============================================================
-// Baud Rate Generator (16x oversampling) - Verilog
+// Baud Rate Generator (16x oversampling)
+// Generates oversample_tick (16x) and bit_tick (1x)
 // ============================================================
-module baud_gen #(
-    parameter CLK_FREQ = 50000000,  // input clock frequency
-    parameter BAUD     = 115200     // baud rate
+module baud_gen #( 
+    parameter CLK_FREQ = 50000000,  // Hz
+    parameter BAUD     = 115200
 )(
     input  wire clk,
     input  wire reset,
-    output reg  oversample_tick, // 16x tick
-    output reg  bit_tick         // 1x tick
+    output reg  oversample_tick,
+    output reg  bit_tick
 );
 
-    // Divider values
-    localparam DIV_16X = CLK_FREQ / (BAUD * 16);
-    localparam DIV_1X  = CLK_FREQ / BAUD;
+    localparam integer DIVISOR = CLK_FREQ / (BAUD * 16);
+    localparam integer WIDTH   = $clog2(DIVISOR);
 
-    integer cnt_16x;
-    integer cnt_1x;
+    reg [WIDTH-1:0] count;
+    reg [3:0]       os_count;
 
-    // 16x tick generator
     always @(posedge clk or posedge reset) begin
         if (reset) begin
-            cnt_16x <= 0;
+            count            <= 0;
+            os_count         <= 0;
+            oversample_tick  <= 0;
+            bit_tick         <= 0;
+        end else begin
             oversample_tick <= 0;
-        end else begin
-            if (cnt_16x >= DIV_16X - 1) begin
-                cnt_16x <= 0;
+            bit_tick        <= 0;
+            if (count == DIVISOR-1) begin
+                count <= 0;
                 oversample_tick <= 1;
+                if (os_count == 15) begin
+                    os_count <= 0;
+                    bit_tick <= 1;
+                end else begin
+                    os_count <= os_count + 1;
+                end
             end else begin
-                cnt_16x <= cnt_16x + 1;
-                oversample_tick <= 0;
+                count <= count + 1;
             end
         end
     end
-
-    // 1x tick generator
-    always @(posedge clk or posedge reset) begin
-        if (reset) begin
-            cnt_1x <= 0;
-            bit_tick <= 0;
-        end else begin
-            if (cnt_1x >= DIV_1X - 1) begin
-                cnt_1x <= 0;
-                bit_tick <= 1;
-            end else begin
-                cnt_1x <= cnt_1x + 1;
-                bit_tick <= 0;
-            end
-        end
-    end
-
 endmodule
 
-       
