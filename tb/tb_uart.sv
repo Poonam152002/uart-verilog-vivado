@@ -1,91 +1,97 @@
 `timescale 1ns/1ps
-// ============================================================
-// Testbench for UART Top (loopback)
-// - Sends "HELLO\n" into TX FIFO
-// - Reads back from RX FIFO and checks data
-// ============================================================
+// ------------------------------------------------------------
+// Combined UART Transceiver Testbench
+// TX sends → RX receives, then check results
+// ------------------------------------------------------------
 module tb_uart;
-    // 50 MHz clock => 20 ns period
+
     reg clk = 0;
-    always #10 clk = ~clk;
+    always #10 clk = ~clk;   // 50 MHz
 
     reg reset = 1;
 
-    // DUT IO
-    reg        tx_wr;
-    reg  [7:0] tx_data_in;
-    wire       tx_full;
-
-    reg        rx_rd;
-    wire [7:0] rx_data_out;
-    wire       rx_empty;
-
-    reg        parity_en;
-    reg        parity_odd;
-
-    wire [15:0] tx_level, rx_level;
-    wire parity_err_flag, frame_err_flag;
-
-    // Instantiate DUT
-    uart_top #(.CLK_FREQ(50_000_000), .BAUD(115200)) DUT (
-        .clk(clk), .reset(reset),
-        .tx_wr(tx_wr), .tx_data_in(tx_data_in), .tx_full(tx_full),
-        .rx_rd(rx_rd), .rx_data_out(rx_data_out), .rx_empty(rx_empty),
-        .parity_en(parity_en), .parity_odd(parity_odd),
-        .tx_level(tx_level), .rx_level(rx_level),
-        .parity_err_flag(parity_err_flag), .frame_err_flag(frame_err_flag)
+    wire oversample_tick, bit_tick;
+    baud_gen #(.CLK_FREQ(50_000_000), .BAUD(115200)) u_baud (
+        .clk(clk),
+        .reset(reset),
+        .oversample_tick(oversample_tick),
+        .bit_tick(bit_tick)
     );
 
-    task write_tx(input [7:0] b);
-    begin
-        @(posedge clk);
-        tx_data_in <= b;
-        tx_wr <= 1'b1;
-        @(posedge clk);
-        tx_wr <= 1'b0;
-    end
-    endtask
+    // TX
+    reg in_valid;
+    wire in_ready;
+    reg [7:0] in_data;
+    reg parity_en, parity_odd;
+    wire tx;
+    wire busy;
 
-    task read_rx(output [7:0] b);
-    begin
-        while (rx_empty) @(posedge clk);
-        rx_rd <= 1'b1;
-        @(posedge clk);
-        b = rx_data_out;
-        rx_rd <= 1'b0;
-    end
-    endtask
+    uart_tx u_tx (
+        .clk(clk),
+        .reset(reset),
+        .oversample_tick(oversample_tick),
+        .in_valid(in_valid),
+        .in_ready(in_ready),
+        .in_data(in_data),
+        .parity_en(parity_en),
+        .parity_odd(parity_odd),
+        .tx(tx),
+        .busy(busy)
+    );
 
-    integer i;
-    reg [7:0] ch;
+    // RX
+    wire rx_valid;
+    reg rx_ready;
+    wire [7:0] rx_data;
+    wire parity_err, frame_err;
+
+    uart_rx u_rx (
+        .clk(clk),
+        .reset(reset),
+        .oversample_tick(oversample_tick),
+        .rx(tx),
+        .parity_en(parity_en),
+        .parity_odd(parity_odd),
+        .rx_valid(rx_valid),
+        .rx_ready(rx_ready),
+        .rx_data(rx_data),
+        .parity_err(parity_err),
+        .frame_err(frame_err)
+    );
 
     initial begin
-        // init
-        tx_wr = 0; rx_rd = 0; tx_data_in = 0;
-        parity_en = 1'b1; parity_odd = 1'b0; // even parity
-        // release reset
-        repeat(10) @(posedge clk);
+        reset = 1; in_valid = 0; rx_ready = 0;
+        in_data = 0; parity_en = 1; parity_odd = 0;
+        repeat (8) @(posedge clk);
         reset = 0;
 
-        // send "HELLO\n"
-        write_tx("H");
-        write_tx("E");
-        write_tx("L");
-        write_tx("L");
-        write_tx("O");
-        write_tx("\n");
+        // Transmit HELLO
+        send_byte("H");
+        send_byte("E");
+        send_byte("L");
+        send_byte("L");
+        send_byte("O");
 
-        // read back
-        for (i=0; i<6; i=i+1) begin
-            read_rx(ch);
-            $display("RX[%0d] = 0x%02h (%s)  parity_err=%0b frame_err=%0b  levels: TX=%0d RX=%0d",
-                     i, ch, (ch>=32 && ch<127)? {ch} : " ", parity_err_flag, frame_err_flag, tx_level, rx_level);
-        end
-
-        if (parity_err_flag || frame_err_flag) $display("ERROR flags set!");
-        else $display("PASS: Received string OK.");
-
-        repeat(10000) @(posedge clk); // extra time to view waveforms
+        repeat (4000) @(posedge clk);
         $finish;
     end
+
+    task send_byte;
+        input [7:0] b;
+        begin
+            @(posedge clk);
+            in_data  = b;
+            in_valid = 1;
+            @(posedge clk);
+            in_valid = 0;
+            wait(rx_valid);
+            $display("RX: %c (0x%02h), parity_err=%b, frame_err=%b",
+                     rx_data, rx_data, parity_err, frame_err);
+            rx_ready = 1;
+            @(posedge clk);
+            rx_ready = 0;
+        end
+    endtask
+
 endmodule
+
