@@ -1,98 +1,70 @@
 // ============================================================
-// UART Transmitter
-// Features:
-//  - 8 data bits
-//  - Optional parity (even/odd)
-//  - 1 stop bit
-//  - Valid/Ready handshake on input
-//  - Uses oversample_tick: change output every 16 ticks
+// UART Transmitter (8N1 format, no parity) - Verilog
 // ============================================================
 module uart_tx #(
-    parameter integer DATA_BITS = 8
+    parameter CLK_FREQ = 50000000,
+    parameter BAUD     = 115200
 )(
     input  wire clk,
     input  wire reset,
-    input  wire oversample_tick,   // 16x tick
-    // handshake
-    input  wire        in_valid,
-    output reg         in_ready,
-    input  wire [7:0]  in_data,
-    // parity control
-    input  wire parity_en,
-    input  wire parity_odd,
-    // serial out
-    output reg  tx,
-    output reg  busy
+    input  wire tx_start,       // Start transmission
+    input  wire [7:0] tx_data,  // Byte to send
+    output reg  tx,             // Serial output
+    output reg  tx_busy         // High when transmitting
 );
-    localparam [2:0] S_IDLE=0, S_START=1, S_DATA=2, S_PAR=3, S_STOP=4;
 
-    reg [2:0] state;
-    reg [3:0] bit_idx;
-    reg [3:0] os_cnt; // 0..15
-    reg [7:0] shreg;
-    reg       par_bit;
+    localparam IDLE  = 2'b00;
+    localparam START = 2'b01;
+    localparam DATA  = 2'b10;
+    localparam STOP  = 2'b11;
+
+    reg [1:0] state;
+    reg [3:0] bit_index;
+    reg [7:0] shift_reg;
+
+    wire bit_tick;
+    baud_gen #(.CLK_FREQ(CLK_FREQ), .BAUD(BAUD)) baud_inst (
+        .clk(clk),
+        .reset(reset),
+        .oversample_tick(),
+        .bit_tick(bit_tick)
+    );
 
     always @(posedge clk or posedge reset) begin
         if (reset) begin
-            state <= S_IDLE;
-            tx <= 1'b1;
-            in_ready <= 1'b1;
-            busy <= 1'b0;
-            bit_idx <= 0;
-            os_cnt <= 0;
-            shreg <= 0;
-            par_bit <= 0;
+            state <= IDLE;
+            tx <= 1;
+            tx_busy <= 0;
+            bit_index <= 0;
+            shift_reg <= 0;
         end else begin
-            if (state == S_IDLE) begin
-                tx <= 1'b1;
-                busy <= 1'b0;
-                in_ready <= 1'b1;
-                if (in_valid) begin
-                    shreg <= in_data;
-                    par_bit <= parity_odd ? ~^in_data : ^in_data; // odd = invert even parity
-                    bit_idx <= 0;
-                    os_cnt <= 0;
-                    state <= S_START;
-                    in_ready <= 1'b0;
-                    busy <= 1'b1;
+            case (state)
+                IDLE: begin
+                    tx <= 1;
+                    tx_busy <= 0;
+                    if (tx_start) begin
+                        shift_reg <= tx_data;
+                        state <= START;
+                        tx_busy <= 1;
+                    end
                 end
-            end else if (oversample_tick) begin
-                os_cnt <= os_cnt + 1;
-                case (state)
-                    S_START: begin
-                        tx <= 1'b0; // start bit
-                        if (os_cnt == 4'd15) begin
-                            os_cnt <= 0;
-                            state <= S_DATA;
-                        end
-                    end
-                    S_DATA: begin
-                        tx <= shreg[0];
-                        if (os_cnt == 4'd15) begin
-                            os_cnt <= 0;
-                            shreg <= {1'b0, shreg[7:1]}; // shift right, LSB first
-                            bit_idx <= bit_idx + 1;
-                            if (bit_idx == (DATA_BITS-1)) begin
-                                state <= (parity_en ? S_PAR : S_STOP);
-                            end
-                        end
-                    end
-                    S_PAR: begin
-                        tx <= par_bit;
-                        if (os_cnt == 4'd15) begin
-                            os_cnt <= 0;
-                            state <= S_STOP;
-                        end
-                    end
-                    S_STOP: begin
-                        tx <= 1'b1;
-                        if (os_cnt == 4'd15) begin
-                            os_cnt <= 0;
-                            state <= S_IDLE;
-                        end
-                    end
-                endcase
-            end
+                START: if (bit_tick) begin
+                    tx <= 0;
+                    state <= DATA;
+                    bit_index <= 0;
+                end
+                DATA: if (bit_tick) begin
+                    tx <= shift_reg[bit_index];
+                    if (bit_index == 7) state <= STOP;
+                    else bit_index <= bit_index + 1;
+                end
+                STOP: if (bit_tick) begin
+                    tx <= 1;
+                    state <= IDLE;
+                end
+            endcase
         end
     end
 endmodule
+
+
