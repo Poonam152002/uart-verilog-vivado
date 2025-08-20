@@ -1,122 +1,64 @@
 // ============================================================
-// UART Receiver
-// Features:
-//  - 8 data bits
-//  - Optional parity (even/odd)
-//  - 1 stop bit
-//  - Outputs rx_valid with data + error flags
-//  - 16x oversampling, sample at mid-bit (count==8)
+// UART Receiver (8N1 format, no parity) - Verilog
 // ============================================================
 module uart_rx #(
-    parameter integer DATA_BITS = 8
+    parameter CLK_FREQ = 50000000,
+    parameter BAUD     = 115200
 )(
     input  wire clk,
     input  wire reset,
-    input  wire oversample_tick, // 16x tick
-    input  wire rx,
-    input  wire parity_en,
-    input  wire parity_odd,
-    output reg  rx_valid,
-    input  wire rx_ready,        // consumer handshake
-    output reg  [7:0] rx_data,
-    output reg  parity_err,
-    output reg  frame_err
+    input  wire rx,             // Serial input
+    output reg  [7:0] rx_data,  // Received byte
+    output reg  rx_ready        // High when new data is valid
 );
-    localparam [2:0] S_IDLE=0, S_START=1, S_DATA=2, S_PAR=3, S_STOP=4;
 
-    reg [2:0] state;
-    reg [3:0] os_cnt;
-    reg [3:0] bit_idx;
-    reg [7:0] shreg;
-    reg       par_bit_sampled;
+    localparam IDLE   = 2'b00;
+    localparam START  = 2'b01;
+    localparam DATA   = 2'b10;
+    localparam STOP   = 2'b11;
+
+    reg [1:0] state;
+    reg [3:0] bit_index;
+    reg [7:0] shift_reg;
+
+    wire oversample_tick, bit_tick;
+    baud_gen #(.CLK_FREQ(CLK_FREQ), .BAUD(BAUD)) baud_inst (
+        .clk(clk),
+        .reset(reset),
+        .oversample_tick(oversample_tick),
+        .bit_tick(bit_tick)
+    );
 
     always @(posedge clk or posedge reset) begin
         if (reset) begin
-            state <= S_IDLE;
-            os_cnt <= 0;
-            bit_idx <= 0;
-            shreg <= 0;
+            state <= IDLE;
+            rx_ready <= 0;
             rx_data <= 0;
-            rx_valid <= 0;
-            parity_err <= 0;
-            frame_err <= 0;
-            par_bit_sampled <= 0;
+            shift_reg <= 0;
+            bit_index <= 0;
         end else begin
-            if (rx_valid && rx_ready) rx_valid <= 0;
-
             case (state)
-                S_IDLE: begin
-                    os_cnt <= 0;
-                    bit_idx <= 0;
-                    if (rx == 1'b0) begin
-                        state <= S_START; // start edge
-                        parity_err <= 0;
-                        frame_err <= 0;
-                    end
+                IDLE: begin
+                    rx_ready <= 0;
+                    if (~rx) state <= START;
                 end
-                S_START: begin
-                    if (oversample_tick) begin
-                        os_cnt <= os_cnt + 1;
-                        // sample mid-start
-                        if (os_cnt == 4'd7) begin
-                            if (rx == 1'b0) begin
-                                os_cnt <= 0;
-                                state <= S_DATA;
-                            end else begin
-                                state <= S_IDLE; // false start
-                            end
-                        end
-                    end
+                START: if (bit_tick) begin
+                    state <= DATA;
+                    bit_index <= 0;
                 end
-                S_DATA: begin
-                    if (oversample_tick) begin
-                        os_cnt <= os_cnt + 1;
-                        if (os_cnt == 4'd7) begin
-                            shreg <= {rx, shreg[7:1]}; // LSB first
-                        end
-                        if (os_cnt == 4'd15) begin
-                            os_cnt <= 0;
-                            bit_idx <= bit_idx + 1;
-                            if (bit_idx == (DATA_BITS-1)) begin
-                                state <= (parity_en ? S_PAR : S_STOP);
-                            end
-                        end
-                    end
+                DATA: if (bit_tick) begin
+                    shift_reg[bit_index] <= rx;
+                    if (bit_index == 7) state <= STOP;
+                    else bit_index <= bit_index + 1;
                 end
-                S_PAR: begin
-                    if (oversample_tick) begin
-                        os_cnt <= os_cnt + 1;
-                        if (os_cnt == 4'd7) par_bit_sampled <= rx;
-                        if (os_cnt == 4'd15) begin
-                            os_cnt <= 0;
-                            state <= S_STOP;
-                        end
-                    end
-                end
-                S_STOP: begin
-                    if (oversample_tick) begin
-                        os_cnt <= os_cnt + 1;
-                        if (os_cnt == 4'd7) begin
-                            // stop bit should be 1
-                            if (rx != 1'b1) frame_err <= 1;
-                            rx_data <= shreg;
-                            // parity check
-                            if (parity_en) begin
-                                if (parity_odd) begin
-                                    if (par_bit_sampled != (~^shreg)) parity_err <= 1;
-                                end else begin
-                                    if (par_bit_sampled != (^shreg)) parity_err <= 1;
-                                end
-                            end
-                            rx_valid <= 1;
-                        end
-                        if (os_cnt == 4'd15) begin
-                            os_cnt <= 0;
-                            state <= S_IDLE;
-                        end
-                    end
+                STOP: if (bit_tick) begin
+                    rx_data <= shift_reg;
+                    rx_ready <= 1;
+                    state <= IDLE;
                 end
             endcase
         end
     end
 endmodule
+
+
